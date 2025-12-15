@@ -1,0 +1,28 @@
+# Model files
+*.pt
+*.onnx
+*.weights
+
+# Data & outputs
+data/
+dataset/
+datasets/
+runs/
+outputs/
+images/
+videos/
+
+# Media
+*.jpg
+*.png
+*.jpeg
+*.mp4
+*.avi
+
+# Archives
+*.zip
+*.rar
+
+# Cache
+__pycache__/
+.ipynb_checkpoints/

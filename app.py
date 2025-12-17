@@ -7,279 +7,348 @@ import easyocr
 import os
 import time
 import re
+import pandas as pd
+from datetime import datetime
 
-# Set page config
-st.set_page_config(page_title="Number Plate Detection & OCR", page_icon="🚗", layout="wide")
+# --- PAGE CONFIGURAION ---
+st.set_page_config(
+    page_title="NeuroPlate | Intelligent Recognition", 
+    page_icon="🚘", 
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
 
-# Session State for Resetting
+# --- AESTHETIC STYLING (GLASSMORPHISM) ---
+def load_css():
+    st.markdown("""
+    <style>
+        /* Main Background */
+        .stApp {
+            background: linear-gradient(135deg, #0f172a 0%, #172554 100%);
+            color: #e2e8f0;
+            font-family: 'Plus Jakarta Sans', sans-serif;
+        }
+        
+        /* Headers */
+        h1, h2, h3 {
+            color: #ffffff;
+            font-weight: 800;
+            letter-spacing: -0.5px;
+        }
+        
+        /* Glassmorphic Cards */
+        .glass-card {
+            background: rgba(30, 41, 59, 0.7);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 16px;
+            padding: 24px;
+            box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.36);
+            margin-bottom: 24px;
+            transition: transform 0.2s ease;
+        }
+        
+        .glass-card:hover {
+            transform: translateY(-2px);
+            border-color: rgba(255, 255, 255, 0.2);
+        }
+
+        /* Result Display Typography */
+        .plate-number {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 3rem;
+            font-weight: 700;
+            color: #fbbf24;
+            text-shadow: 0 0 20px rgba(251, 191, 36, 0.3);
+            text-align: center;
+            background: rgba(0, 0, 0, 0.5);
+            padding: 1rem 2rem;
+            border-radius: 12px;
+            border: 1px solid #fbbf24;
+            margin: 1.5rem 0;
+            letter-spacing: 4px;
+        }
+        
+        .state-badge {
+            background: linear-gradient(90deg, #3b82f6, #2563eb);
+            padding: 8px 16px;
+            border-radius: 20px;
+            font-weight: 600;
+            font-size: 1rem;
+            color: white;
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            box-shadow: 0 4px 12px rgba(59, 130, 246, 0.4);
+        }
+
+        /* Custom Button Styling */
+        div.stButton > button {
+            background: linear-gradient(92deg, #6366f1 0%, #8b5cf6 100%);
+            color: white;
+            border: none;
+            padding: 0.6rem 1.2rem;
+            border-radius: 12px;
+            font-weight: 600;
+            box-shadow: 0 4px 12px rgba(99, 102, 241, 0.4);
+            transition: all 0.3s ease;
+        }
+        div.stButton > button:hover {
+            box-shadow: 0 8px 20px rgba(99, 102, 241, 0.6);
+            transform: translateY(-1px);
+        }
+
+        /* Sidebar Beautification */
+        section[data-testid="stSidebar"] {
+            background-color: #0f172a;
+            border-right: 1px solid rgba(255, 255, 255, 0.05);
+        }
+    </style>
+    """, unsafe_allow_html=True)
+
+load_css()
+
+# --- STATE MAPPING ---
+STATE_MAP = {
+    "AP": "Andhra Pradesh", "AR": "Arunachal Pradesh", "AS": "Assam", "BR": "Bihar",
+    "CG": "Chhattisgarh", "GA": "Goa", "GJ": "Gujarat", "HR": "Haryana",
+    "HP": "Himachal Pradesh", "JH": "Jharkhand", "KA": "Karnataka", "KL": "Kerala",
+    "MP": "Madhya Pradesh", "MH": "Maharashtra", "MN": "Manipur", "ML": "Meghalaya",
+    "MZ": "Mizoram", "NL": "Nagaland", "OD": "Odisha", "PB": "Punjab",
+    "RJ": "Rajasthan", "SK": "Sikkim", "TN": "Tamil Nadu", "TS": "Telangana",
+    "TR": "Tripura", "UP": "Uttar Pradesh", "UK": "Uttarakhand", "WB": "West Bengal",
+    "AN": "Andaman & Nicobar", "CH": "Chandigarh", "DN": "Dadra & Nagar Haveli",
+    "DD": "Daman & Diu", "DL": "Delhi", "JK": "Jammu & Kashmir", "LA": "Ladakh",
+    "LD": "Lakshadweep", "PY": "Puducherry"
+}
+
+def detect_state(plate_text):
+    if not plate_text: return "Unknown"
+    code = plate_text[:2].upper()
+    return STATE_MAP.get(code, "Unknown Region")
+
+# --- SESSION STATE ---
+if 'results_history' not in st.session_state:
+    st.session_state.results_history = []
 if 'upload_key' not in st.session_state:
     st.session_state.upload_key = 0
 
-def reset_app():
-    st.session_state.upload_key += 1
-    # Clear any other session state variables if needed
-    if 'ocr_results' in st.session_state:
-        del st.session_state['ocr_results']
+def add_to_history(filename, plate_text, conf, state_name):
+    timestamp = datetime.now().strftime("%I:%M %p | %d %b")
+    new_entry = {
+        "ID": len(st.session_state.results_history) + 1,
+        "Timestamp": timestamp,
+        "Filename": filename,
+        "Detected Plate": plate_text,
+        "State": state_name,
+        "Confidence": f"{conf:.2f}",
+        "Verified": False # Allow user to mark as verified
+    }
+    st.session_state.results_history.insert(0, new_entry)
 
-# Custom CSS for premium Dark Mode UI
-st.markdown("""
-<style>
-    .stApp {
-        background-color: #000000;
-        color: #ffffff;
-    }
-    .main {
-        background-color: #000000;
-    }
-    h1 {
-        background: linear-gradient(to right, #60a5fa, #3b82f6);
-        -webkit-background-clip: text;
-        -webkit-text-fill-color: transparent;
-        font-family: 'Helvetica Neue', sans-serif;
-        font-weight: 800;
-        margin-bottom: 1rem;
-    }
-    .stCard {
-        background-color: #1e1e1e;
-        padding: 1.5rem;
-        border-radius: 10px;
-        box-shadow: 0 4px 6px -1px rgba(255, 255, 255, 0.1), 0 2px 4px -1px rgba(255, 255, 255, 0.06);
-        border: 1px solid #333;
-    }
-    .result-text {
-        font-size: 2.5rem;
-        font-weight: 700;
-        color: #fbbf24; /* Amber-400 for high visibility */
-        font-family: 'Courier New', monospace;
-        text-align: center;
-        letter-spacing: 0.1em;
-        background-color: #000;
-        padding: 1rem;
-        border-radius: 8px;
-        border: 2px solid #fbbf24;
-    }
-    div[data-testid="stFileUploader"] {
-        background-color: #1e1e1e;
-        border-radius: 10px;
-        padding: 20px;
-    }
-</style>
-""", unsafe_allow_html=True)
-
-st.title("🚗 Intelligent Number Plate Recognition")
-
-# Initialize OCR
+# --- MODEL LOADING ---
 @st.cache_resource
-def get_ocr_reader():
-    return easyocr.Reader(['en'], gpu=False) # Set gpu=True if CUDA is available
-
-reader = get_ocr_reader()
-
-# Load Model
-@st.cache_resource
-def load_model(model_path):
-    return YOLO(model_path)
-
-# Try to find the best model path automatically
-possible_paths = [
-    r"yolov8_number_plate/weights/best.pt",
-    os.path.join("runs", "detect", "yolov8_number_plate", "weights", "best.pt"),
-    os.path.join("runs", "detect", "train", "weights", "best.pt"),
-    "yolov8n.pt" 
-]
-
-model_path = None
-for p in possible_paths:
-    if os.path.exists(p):
-        model_path = p
-        break
-
-if model_path:
-    # Sidebar
-    st.sidebar.title("🛠️ Configuration")
-    st.sidebar.success(f"Model: {os.path.basename(model_path)}")
-    confidence_threshold = st.sidebar.slider("Detection Confidence", 0.0, 1.0, 0.25, 0.01)
-    ocr_threshold = st.sidebar.slider("OCR Confidence", 0.0, 1.0, 0.20, 0.01)
+def get_resources():
+    reader = easyocr.Reader(['en'], gpu=False)
     
-    # Add Clear Button to sidebar
-    if st.sidebar.button("🧹 Clear / Reset", on_click=reset_app):
-        pass # The callback handles the reset logic
+    # Locate YOLO Model
+    possible_paths = [
+        r"yolov8_number_plate/weights/best.pt",
+        os.path.join("runs", "detect", "yolov8_number_plate", "weights", "best.pt"),
+        os.path.join("runs", "detect", "train", "weights", "best.pt"),
+        "yolov8n.pt" 
+    ]
+    model_path = None
+    for p in possible_paths:
+        if os.path.exists(p):
+            model_path = p
+            break
+            
+    model = YOLO(model_path) if model_path else None
+    return reader, model, model_path
 
-    try:
-        model = load_model(model_path)
-    except Exception as e:
-        st.error(f"Error loading model: {e}")
-        st.stop()
-else:
-    st.error("No model found. Please train the model first.")
-    st.stop()
+# --- PAGES ---
 
-uploaded_file = st.file_uploader("Drop your vehicle image here...", type=["jpg", "jpeg", "png"], key=f"uploader_{st.session_state.upload_key}")
+def page_dashboard(reader, model):
+    st.title("🚘 NeuroPlate Logic")
+    st.markdown("### Vehicle Identity & Region Scanner")
+    st.write("") # Spacer
 
-if uploaded_file is not None:
-    # Display original image
-    # Reset file pointer to be safe for re-runs
-    uploaded_file.seek(0)
-    image = Image.open(uploaded_file)
-    img_array = np.array(image)
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        st.markdown("<div class='stCard'>", unsafe_allow_html=True)
-        st.subheader("📸 Original Input")
-        st.image(image, use_column_width=True)
-        st.markdown("</div>", unsafe_allow_html=True)
+    uploaded_file = st.file_uploader("Drop image here to analyze...", type=["jpg", "png", "jpeg"], key=f"uploader_{st.session_state.upload_key}")
 
-    # Perform inference
-    with st.spinner('Scanning number plate...'):
-        start_time = time.time()
-        results = model.predict(img_array, conf=confidence_threshold)
-        
-        annotated_img = img_array.copy()
-        
-        # Use a list to collect valid plates
-        valid_plates_found = []
-        
-        # Debug Info Collection
-        debug_logs = []
-        debug_logs.append(f"Model detected {len(results[0].boxes)} bounding boxes.")
+    if uploaded_file:
+        image = Image.open(uploaded_file)
+        try:
+            from PIL import ImageOps
+            image = ImageOps.exif_transpose(image) # Fix phone rotation
+        except: pass
+        img_array = np.array(image)
 
-        for i, result in enumerate(results):
-            boxes = result.boxes
-            for j, box in enumerate(boxes):
-                # Bounding box
-                x1, y1, x2, y2 = box.xyxy[0].tolist()
-                x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
-                conf = float(box.conf[0])
-                debug_logs.append(f"Box {j+1}: Conf={conf:.2f}, Coords=({x1},{y1})-({x2},{y2})")
+        col1, col2 = st.columns([1, 1.2])
 
-                # Crop the number plate for text OCR
-                plate_crop = img_array[y1:y2, x1:x2]
+        with col1:
+            st.markdown("<div class='glass-card'>", unsafe_allow_html=True)
+            st.caption("SOURCE FEED")
+            st.image(image, use_column_width=True, channels="RGB")
+            st.markdown("</div>", unsafe_allow_html=True)
+
+        # Process on Load or Button? Let's do auto-process if file is there for better UX
+        with col2:
+            st.markdown("<div class='glass-card'>", unsafe_allow_html=True)
+            st.caption("ANALYSIS FEED")
+            
+            with st.spinner("Decoding Neural Patterns..."):
+                start_time = time.time()
                 
-                # Helper function to rotate image
-                def rotate_image(image, angle):
-                    image_center = tuple(np.array(image.shape[1::-1]) / 2)
-                    rot_mat = cv2.getRotationMatrix2D(image_center, angle, 1.0)
-                    result = cv2.warpAffine(image, rot_mat, image.shape[1::-1], flags=cv2.INTER_LINEAR, borderValue=(255,255,255))
-                    return result
-
-                # OCR Retry Logic for Rotated Images
-                best_text = ""
+                # Inference
+                results = model.predict(img_array, conf=0.25)
+                annotated_img = img_array.copy()
+                
+                best_text = None
                 best_conf = 0.0
-                
-                angles_to_try = [0, -10, 10, -15, 15, -5, 5]
-                log_entry = f"Box {j+1} OCR: "
-                
-                for angle in angles_to_try:
-                    # Rotate if angle is not 0
-                    if angle == 0:
-                        processed_crop = plate_crop.copy()
-                    else:
-                        processed_crop = rotate_image(plate_crop, angle)
 
-                    if processed_crop.size > 0:
+                if results[0].boxes:
+                    for box in results[0].boxes:
+                        x1, y1, x2, y2 = map(int, box.xyxy[0])
+                        # Draw aesthetic box
+                        cv2.rectangle(annotated_img, (x1, y1), (x2, y2), (0, 255, 200), 2)
+                        
+                        # OCR
+                        crop = img_array[y1:y2, x1:x2]
                         try:
-                            # Preprocessing for OCR
-                            gray_plate = cv2.cvtColor(processed_crop, cv2.COLOR_RGB2GRAY)
+                            # Preprocess
+                            gray = cv2.cvtColor(crop, cv2.COLOR_RGB2GRAY)
+                            gray = cv2.fastNlMeansDenoising(gray, None, 10, 7, 21)
+                            # Upscale if small
+                            if gray.shape[0] < 50:
+                                gray = cv2.resize(gray, None, fx=3.0, fy=3.0, interpolation=cv2.INTER_CUBIC)
                             
-                            # Upscale if too small
-                            if gray_plate.shape[0] < 50 or gray_plate.shape[1] < 150:
-                                scale = 3.0
-                                gray_plate = cv2.resize(gray_plate, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+                            detections = reader.readtext(gray)
                             
-                            # Contrast enhancement
-                            gray_plate = cv2.equalizeHist(gray_plate)
-                            
-                            # Denoise
-                            gray_plate = cv2.fastNlMeansDenoising(gray_plate, None, 10, 7, 21)
-
-                            text_detections = reader.readtext(gray_plate)
-                            
-                            detected_text = ""
-                            local_conf = 0.0
-                            count = 0
-                            
-                            for detection in text_detections:
-                                bbox, text, score = detection
-                                if score > ocr_threshold:
-                                    detected_text += text + " "
-                                    local_conf += score
-                                    count += 1
-                            
-                            if count > 0:
-                                local_conf /= count
-                            
-                            detected_text = detected_text.strip()
-                            clean_text = re.sub(r'[^A-Z0-9]', '', detected_text.upper())
-                            
-                            if clean_text:
-                                log_entry += f"[{angle}°: '{clean_text}' ({local_conf:.2f})] "
-
-                            # Check if this result is better
-                            if len(clean_text) >= 4:
-                                # Prioritize pattern matches
-                                is_pattern_match = bool(re.search(r'[A-Z]{2}\d{1,2}[A-Z]{0,3}\d{4}', clean_text))
-                                
-                                # Boost confidence for pattern matches
-                                effective_conf = local_conf + (0.5 if is_pattern_match else 0.0)
-                                
-                                if effective_conf > best_conf:
-                                    best_conf = effective_conf
-                                    best_text = clean_text
+                            # Scoring logic
+                            text_accum = ""
+                            score_sum = 0
+                            cnt = 0
+                            for _, txt, score in detections:
+                                if score > 0.2:
+                                    text_accum += txt + " "
+                                    score_sum += score
+                                    cnt += 1
                                     
-                        except Exception as e:
-                            print(f"OCR Error at angle {angle}: {e}")
+                            if cnt > 0:
+                                clean = re.sub(r'[^A-Z0-9]', '', text_accum.upper())
+                                final_score = score_sum / cnt
+                                # Pattern boost
+                                if re.search(r'[A-Z]{2}\d{1,2}[A-Z]{0,3}\d{4}', clean):
+                                    final_score += 0.4 
+                                
+                                if final_score > best_conf:
+                                    best_conf = final_score
+                                    best_text = clean
+                        except: pass
                 
-                debug_logs.append(log_entry)
-
-                # Process the best result found across all angles
+                # Show Annotated Image
+                st.image(annotated_img, use_column_width=True, channels="RGB")
+                
                 if best_text:
-                    valid_plates_found.append(best_text)
+                    state = detect_state(best_text)
                     
-                    # Draw clean text on image
-                    t_size = cv2.getTextSize(best_text, cv2.FONT_HERSHEY_SIMPLEX, 0.9, 2)[0]
-                    # Ensure text doesn't go off-screen top
-                    text_y = y1 - 10 if y1 - 10 > 25 else y1 + 25 
+                    # Aesthetic Result Display
+                    st.markdown(f"<div class='plate-number'>{best_text}</div>", unsafe_allow_html=True)
+                    st.markdown(f"""
+                        <div style="display: flex; justify-content: center; gap: 1rem; margin-top: 1rem;">
+                            <div class="state-badge">🇮🇳 {state}</div>
+                            <div class="state-badge" style="background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.2);">Conf: {int(best_conf*100)}%</div>
+                        </div>
+                    """, unsafe_allow_html=True)
                     
-                    cv2.rectangle(annotated_img, (x1, y1), (x2, y2), (0, 255, 0), 3)
-                    cv2.rectangle(annotated_img, (x1, text_y - 25), (x1 + t_size[0] + 10, text_y + 5), (0, 0, 0), -1)
-                    cv2.putText(annotated_img, best_text, (x1 + 5, text_y), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 255), 2)
+                    # Auto-save
+                    # Prevent double-save: check if most recent entry is same image
+                    should_save = True
+                    if st.session_state.results_history:
+                        last = st.session_state.results_history[0]
+                        if last['Filename'] == uploaded_file.name and last['Detected Plate'] == best_text:
+                            should_save = False
+                    
+                    if should_save:
+                        add_to_history(uploaded_file.name, best_text, best_conf, state)
+                        st.toast("Scan Recorded Successfully", icon="💾")
+                        
+                else:
+                    st.warning("Vehicle detected, but license plate was unreadable.")
+            
+            st.markdown("</div>", unsafe_allow_html=True)
 
 
-        end_time = time.time()
-        
-    with col2:
-        st.markdown("<div class='stCard'>", unsafe_allow_html=True)
-        st.subheader("🎯 Detection Result")
-        st.image(annotated_img, use_column_width=True)
-        st.caption(f"Processed in {end_time - start_time:.2f} seconds")
-        st.markdown("</div>", unsafe_allow_html=True)
-
-    # FINAL RESULT DISPLAY
-    st.markdown("---")
+def page_results():
+    st.title("📂 Result Page")
+    st.markdown("Database of all scanned vehicles.")
     
-    # Robust Output Logic
-    if valid_plates_found:
-        st.markdown("<h2 style='text-align: center;'>Detected Number Plate</h2>", unsafe_allow_html=True)
-        # Use set to remove duplicates, then list to iterate
-        unique_plates = list(set(valid_plates_found))
-        for plate_text in unique_plates:
-            st.markdown(f"<div class='result-text'>{plate_text}</div>", unsafe_allow_html=True)
-    else:
-        # Check why found nothing
-        if len(results[0].boxes) > 0:
-            st.warning("⚠️ Vehicle/Number Plate detected, but OCR could not read the text clearly.")
-            st.markdown("**Troubleshooting:**\n- Try adjusting the **OCR Confidence** slider in the sidebar.\n- Ensure the image is not too blurry.\n- Check Debug Logs below.")
-        else:
-            st.error("❌ No number plate detected in this image.")
-            st.markdown("**Troubleshooting:**\n- Try adjusting the **Detection Confidence** slider in the sidebar (lower it).\n- Ensure the image contains a visible vehicle.")
+    if not st.session_state.results_history:
+        st.info("No data available. Go to **Dashboard** to start scanning.")
+        return
 
-    # Debug Expander
-    with st.expander("🔍 Debug Logs (Click to expand)"):
-        st.write("System Logs:")
-        for log in debug_logs:
-            st.text(log)
+    # Data Editor
+    df = pd.DataFrame(st.session_state.results_history)
+    
+    # Display statistics
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("Total Scans", len(df))
+    with col2:
+        top_state = df['State'].mode()[0] if not df.empty else "N/A"
+        st.metric("Most Frequent State", top_state)
+    
+    st.markdown("### Scanned Records")
+    
+    edited_df = st.data_editor(
+        df,
+        key="results_editor",
+        num_rows="dynamic",
+        use_container_width=True,
+        column_config={
+            "Timestamp": st.column_config.TextColumn("Time", disabled=True),
+            "Detected Plate": st.column_config.TextColumn("Plate Number", required=True),
+            "State": st.column_config.SelectboxColumn("State", options=list(STATE_MAP.values())),
+            "Verified": st.column_config.CheckboxColumn("Verify?", default=False),
+        },
+        hide_index=True
+    )
+    
+    st.markdown("---")
+    if st.button("📥 Download CSV Report"):
+        csv = edited_df.to_csv(index=False)
+        st.download_button(
+            label="Click to Download",
+            data=csv,
+            file_name=f"neuroplate_report_{int(time.time())}.csv",
+            mime="text/csv"
+        )
 
 
+def main():
+    try:
+        reader, model, path = get_resources()
+    except Exception as e:
+        st.error(f"System Error: {e}")
+        st.stop()
+        
+    if not model:
+        st.error("Model Weights Not Found. Please re-train.")
+        st.stop()
 
+    # Aesthetic Sidebar
+    st.sidebar.markdown("## ⚡ Navigation")
+    page = st.sidebar.radio("Go to", ["Dashboard", "Result Page"], label_visibility="collapsed")
+    
+    st.sidebar.markdown("---")
+    st.sidebar.info(f"Using Engine: `{os.path.basename(path)}`")
+    
+    if page == "Dashboard":
+        page_dashboard(reader, model)
+    elif page == "Result Page":
+        page_results()
+
+if __name__ == "__main__":
+    main()
